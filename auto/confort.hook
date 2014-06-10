@@ -85,6 +85,4 @@ hook_run_install_all_pre() {
 }
 hook_run_install_all_post() { hook_run_install_all_pre; }
 
-hook_auto_names() {
-	echo install_all_{pre,post}
-}
+hook_auto_names() { echo install_all_{pre,post}; }

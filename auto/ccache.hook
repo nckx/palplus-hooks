@@ -195,6 +195,4 @@ hook_run_install_post() {
 	echo -n "${msg}" >&2
 }
 
-hook_auto_names() {
-	echo install_{pre,post}
-}
+hook_auto_names() { echo install_{pre,post}; }
