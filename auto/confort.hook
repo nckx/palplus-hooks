@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+##
+## Confort is a configuration (CONFIG_PROTECT) update manager for Exherbo that
+## makes Paludis more better. Once a proposed configuration file has been dealt
+## with by the administrator (usually with `eclectic config'), that particular
+## change will not be suggested again--even when the package is re-installed.
+##
+## Copyright (C) 2014 Tobias Geerinckx-Rice (nckx) <tobias.geerinckx.rice@gmail.com>
+##
+## This program is free software; you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation; either version 3 of the License, or
+## (at your option) any later version.
+##
+## This program is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License along
+## with this program; if not, write to the Free Software Foundation, Inc.,
+## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+##
+hook_run_install_all_pre() {
+	local 	IFS=$'\n' \
+		new_glob="._cfg????_" \
+		database="/var/database/paludis/confort"
+
+	if mkdir --parents "${database}"/{pending,reject}; then
+		cd "${database}"
+	else
+		return 1
+	fi
+
+	##
+	## Get the cached list of CONFIG_PROTECTed directories from Paludis
+	## If this is the first time Paludis is run, and the cache does not
+	## exist, fall back to sane defaults for now
+	##
+	local old new
+	new=( $( LC_ALL=C sort -u "$(
+			"${CAVE%% *}" print-repository-metadata \
+				--raw-name location --format '%v' installed
+		)/.cache/all_CONFIG_PROTECT"
+	) ) 2>/dev/null || new=( /etc )
+
+	##
+	## Find configuration file update suggestions. If these exact changes
+	## have been dealt with before (i.e. the same file is already in
+	## reject/), remove the update completely. If not, copy it to pending/.
+	##
+	for new in $( find "${new[@]}" -name "${new_glob}*" 2>/dev/null ); do
+		old="${new//${new_glob}}"
+		if [[ "$( < "${new}" )" == "$( < reject"${old}" )" ]]; then
+			echo $'\e'"[0;32mreject changes to ${old}"$'\e'"[0m"
+			rm "${new}"
+		else
+			mkdir --parents pending"${old%/*}"
+			cp "${new}" pending"${old}"
+		fi 2>/dev/null
+	done
+
+	##
+	## Move pending/ files to reject/ if no files matching path+${new_glob}
+	## exist (i.e. the administrator has dealt with them in whatever way)
+	##
+	for old in $( cd pending && find -type f ); do
+		old="${old#.}"
+		for new in "${old%/*}"/${new_glob}"${old##*/}"; do
+			if [[ -e "${new}" ]]; then
+				continue 2
+			fi
+		done
+
+		mkdir --parents reject"${old%/*}"
+		mv {pending,reject}"${old}"
+	done
+
+	##
+	## Recursively remove empty directory trees in the ${database}
+	##
+	local gone
+	while gone="$( find -mindepth 2 -type d -empty -delete -print )" &&
+	      [[ "${gone}" ]]; do :; done
+}
+hook_run_install_all_post() { hook_run_install_all_pre; }
+
+hook_auto_names() {
+	echo install_all_{pre,post}
+}
