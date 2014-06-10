@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+##
+## NOTE: this is work in progress, and rather rough around some edges.
+##
+## Show pretty per-package ccache statistics while building.
+## It's not actually possible to track separate statistics when multiple
+## cave instances are using the compiler cache, so they are only displayed
+## if no other builds were started, running, or completed in the meantime.
+## The hook properly does nothing if CCACHE_DISABLE is set.
+##
+## Copyright 2014 Tobias Geerinckx-Rice <tobias.geerinckx.rice@gmail.com>
+##
+## This program is free software; you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation; either version 3 of the License, or
+## (at your option) any later version.
+##
+## This program is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License along
+## with this program; if not, write to the Free Software Foundation, Inc.,
+## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+##
+
+##
+## I (and surely others) set these in bashrc, requiring a little creativity
+## That said, there ought to be a better way to FIXME
+##
+_hook_ccache_loadenv_hack() {
+	local PN=hack
+	{ source /etc/paludis/bashrc; } 2>/dev/null
+	export CCACHE_DIR CCACHE_DISABLE
+}
+
+_hook_ccache_stats_command() {
+	(
+		_hook_ccache_loadenv_hack
+		if [[ "${CCACHE_DISABLE}" ]]; then
+			exit 1
+		else
+			ccache --show-stats
+		fi
+	) 2>/dev/null
+}
+
+_hook_ccache_temp="/tmp/cave-hook-ccache"
+_hook_ccache_prefix="${_hook_ccache_temp}@$(
+	_hook_ccache_loadenv_hack
+	echo "${CCACHE_DIR////-}"
+)."
+
+hook_run_install_pre() {
+	##
+	## A big fat (and SLOW!) hack to shorten the interference window:
+	## (Paludis provides no cheaper way to find out if we're building?)
+	## NOTE: added even hackier cache to avoid slowdown after first run
+	##
+	local repository="${CAVE_PERFORM_CMDLINE_PARAMS##*::}" binary=
+	local binary_cache="${_hook_ccache_temp}.binary:${repository}"
+	if ! read binary <"${binary_cache}"; then
+		binary="$( "${CAVE%% *}" print-repository-metadata \
+			--raw-name binary_destination --format %v \
+			"${repository}" )"
+		echo "${binary}" >"${binary_cache}"
+	fi 2>/dev/null
+	if [[ "${binary}" == true ]]; then
+		return 0
+	fi
+
+	##
+	## Silently return (without creating a file) if ccache fails, is
+	## disabled or is not installed:
+	##
+	local data # local always returns true; useless in tests
+	data="$( _hook_ccache_stats_command )" || return 0
+
+	##
+	## If any other running builds are found, truncate all temporary cache
+	## statistics (including our own), causing the post hook to print a
+	## warning instead of bogus semi-combined data.
+	##
+	## Temporary cache statistics belonging to now-dead processes cannot
+	## interfere with ours, and are silently cleaned:
+	##
+	local IFS=$'\0' file
+	for file in "${_hook_ccache_prefix}"*; do
+		[[ -f "${file}" ]] || continue
+		if [[ -f /proc/"${file##*[^0-9]}"/cmdline ]]; then
+			data=
+			echo -n >"${file}"
+		else
+			exec rm --force "${file}" &
+		fi
+	done
+
+	##
+	## Always create a file so the _post hook knows that we ran
+	##
+	echo -n "${data}" >"${_hook_ccache_prefix}${PALUDIS_PID}"
+}
+
+hook_run_install_post() {
+	##
+	## If our temporary file is empty, we were interfered with, so print
+	## a warning to this effect and return. If it doesn't exist, the _pre
+	## hook failed (or decided not to run) and we just silently return:
+	##
+	local old="${_hook_ccache_prefix}${PALUDIS_PID}" \
+	      old_data new_data # local always returns true; useless in tests
+	{ old_data="$( <"${old}" )"; } 2>/dev/null || return 0
+	exec rm --force "${old}" &
+	if [[ ! "${old_data}" ]]; then
+		echo $'\e'"[1;33mmultiple parallel builds:" \
+		     "no per-package statistics available"$'\e'"[0m" >&2
+		return 0
+	fi
+
+	##
+	## Shouldn't fail since it worked in pre_, but it's not fatal:
+	##
+	if ! new_data="$( _hook_ccache_stats_command )"; then return 0; fi
+
+	##
+	## Parse and compare both sets of statistics, and build an array of
+	## the values that were incremented during the build (omitting fields
+	## that may shrink after a cleaning, like file count or cache size):
+	##
+	local IFS=$'\n' row= key= keys=() new= pad_key=0 pad_new=0
+	local -A out
+	for row in ${new_data}; do
+		key="${row%%  *}"
+		case "${key}" in "files in cache"|"cache size") continue;; esac
+
+		new="${row##*  }"
+
+		old="${old_data##*$'\n'${key}  }"
+		[[ "${old}" != "${old_data}" ]] || continue
+		old="${old%%$'\n'*}"
+		old="${old##*  }"
+
+		key="${key#cache }"
+
+		[[ "${old}" != "${new}" ]] || continue
+
+		##
+		## If data is numeric, print only the difference
+		##
+		if [[ "${new##*[^0-9]*}" &&
+		      "${old##*[^0-9]*}" ]]; then
+			if [[ ${new} -gt ${old} ]]; then
+				new=$(( new - old ))
+			elif [[ ${new} -lt ${old} ]]; then
+				echo $'\e'"[1;33mcache interfered with" \
+				     "during build: no usable" \
+				     "statistics"$'\e'"[0m" >&2
+				return 0
+			else
+				continue
+			fi
+		else
+			new="${old} → ${new}"
+		fi
+
+		out["${key}"]="${new}"
+		keys+=( "${key}" )
+		[[ ${pad_key} -ge ${#key} ]] || pad_key=${#key}
+
+		if [[ "${new}" == [0-9]* ]]; then new="${new%% *}"; fi
+		[[ ${pad_new} -ge ${#new} ]] || pad_new=${#new}
+	done
+
+	##
+	## Print a formatted table of the modified values, based on the data
+	## and column width information obtained in the previous loop (pad_*)
+	##
+	local msg=
+	for key in "${keys[@]}"; do # ${!out[@]} isn't sorted so use $keys hack
+		new="${out["${key}"]}"
+		row=
+		if [[ "${new}" == [0-9]*" "* ]]; then
+			row="${new#* }"
+			new="${new%% *}"
+		fi
+
+		while [[ ${#new} -lt ${pad_new} ]]; do new=" ${new}"; done
+
+		key+=":"
+		while [[ ${#key} -le ${pad_key} ]]; do key+=" "; done
+
+		msg+=$'\e'"[35m${key} ${new}${row}"$'\e'"[0m"$'\n'
+	done
+	echo -n "${msg}" >&2
+}
+
+hook_auto_names() {
+	echo install_{pre,post}
+}
