@@ -49,7 +49,8 @@ hook_run_install_all_pre() {
 	##
 	for new in $( find "${new[@]}" -name "${new_glob}*" 2>/dev/null ); do
 		old="${new//\/${new_glob}/\/}"
-		if [[ "$( < "${new}" )" == "$( < reject"${old}" )" ]]; then
+		if reject_contents="$( < reject"${old}" )" &&
+		   [[ "$( < "${new}" )" == "${reject_contents}" ]]; then
 			echo $'\e'"[0;32mreject changes to ${old}"$'\e'"[0m"
 			rm "${new}"
 		else
