@@ -24,7 +24,7 @@
 hook_run_install_all_pre() {
 	local 	IFS=$'\n' \
 		new_glob="._cfg????_" \
-		database="/var/database/paludis/confort"
+		database="/var/db/paludis/confort"
 
 	mkdir --parents "${database}"/{pending,reject} || return 1
 
