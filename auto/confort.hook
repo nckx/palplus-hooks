@@ -26,11 +26,9 @@ hook_run_install_all_pre() {
 		new_glob="._cfg????_" \
 		database="/var/database/paludis/confort"
 
-	if mkdir --parents "${database}"/{pending,reject}; then
-		cd "${database}"
-	else
-		return 1
-	fi
+	mkdir --parents "${database}"/{pending,reject} || return 1
+
+	cd "${database}"
 
 	##
 	## Get the cached list of CONFIG_PROTECTed directories from Paludis
