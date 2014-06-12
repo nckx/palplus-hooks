@@ -48,7 +48,7 @@ hook_run_install_all_pre() {
 	## reject/), remove the update completely. If not, copy it to pending/.
 	##
 	for new in $( find "${new[@]}" -name "${new_glob}*" 2>/dev/null ); do
-		old="${new//${new_glob}}"
+		old="${new//\/${new_glob}/\/}"
 		if [[ "$( < "${new}" )" == "$( < reject"${old}" )" ]]; then
 			echo $'\e'"[0;32mreject changes to ${old}"$'\e'"[0m"
 			rm "${new}"
