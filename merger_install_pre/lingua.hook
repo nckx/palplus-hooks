@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+##
+## Remove all files belonging to disabled linguas
+##
+## Copyright (C) 2012 nckx <mr.nckx@gmail.com>
+##
+## This program is free software; you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation; either version 3 of the License, or
+## (at your option) any later version.
+##
+## This program is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License along
+## with this program; if not, write to the Free Software Foundation, Inc.,
+## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+##
+
+hook_run_merger_install_pre() {
+	##
+	## Only run when merging to / (i.e. don't affect PBIN creation)
+	##
+	[[ "${IMAGE}" ]] || return 0
+
+	##
+	## There seems to be no cleaner way to get our own options than this
+	## gross hack -- is that even possible? FIXME
+	## This can also fail, for example when installing from ::unpackaged
+	##
+	local want="$( "${CAVE%% *}" show \
+			  "${CAVE_PERFORM_CMDLINE_PARAMS##* }" \
+			  -1fnrk PALUDIS_CHOICES 2>/dev/null )" || return
+	local temp="${want##* linguas: }"
+	# If temp == want, there is no linguas: sub-option, currently ignored
+	want="${temp%%$'\n'*}"
+	temp="${want%%:*}"
+	[[ "${temp}" == "${want}" ]] ||
+		want="${temp% *}"
+	want=" ${want} "
+
+	##
+	## Remove all unknown or disabled lingua directly under ${name}
+	## FIXME this is a crude heuristic, not a definitive (white)list
+	##
+	local name= path= lang= IFS=$'\n'
+	local -A gone
+	for name in lang locale{,s} share/man; do
+		for path in $( find "${INSTALL_SOURCE}" \
+			       -type d -path "*/${name}" ); do
+			cd "${path}"
+
+			for lang in {[a-z][a-z],[a-z][a-z][a-z]}{,_[a-z][a-z]}{,@*}{,.{UTF,ISO}*}; do
+				[[ -d "${lang}" ]] || continue
+				lang="${lang%/}"
+
+				case "${lang}" in man*) continue;; esac
+
+				if [[ "${want##* ${lang} *}" ]]; then
+					# echo "${path#${INSTALL_SOURCE}}/${lang}"
+					gone["${lang}"]=set
+					rm -rf "${lang}"
+				fi
+			done
+
+			while [[ "${#path}" -gt "${#INSTALL_SOURCE}" ]]; do
+				if rmdir "${path}" 2>/dev/null; then
+					# echo "${path#${INSTALL_SOURCE}}"
+					:
+				fi
+				path="${path%/*}"
+			done
+		done
+
+	done
+
+	if [[ "${gone}" ]]; then
+		echo $'\e'"[1;31removed ${#gone[@]} unselected lingua"
+		echo "the package should have done this by itself!"$'\e'"[0m"
+	fi
+}
+
+hook_auto_names() { echo merger_install_pre; }

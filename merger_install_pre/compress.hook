@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+##
+## Compress selected files before merging to /
+##
+## Copyright 2014 nckx <mr.nckx@gmail.com>
+##
+## This program is free software; you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation; either version 3 of the License, or
+## (at your option) any later version.
+##
+## This program is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License along
+## with this program; if not, write to the Free Software Foundation, Inc.,
+## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+##
+
+hook_run_merger_install_pre() {
+	##
+	## Compressor to use, and its suffix (extension) without '.'
+	## The compressor MUST be configured to act as a pipe
+	##
+	compress_pipe=( xz -e9 --threads=0 )
+	compress_suffix="xz"
+
+	##
+	## Only run if merging to / (i.e. don't affect PBIN creation)
+	##
+	[[ "${IMAGE}" ]] && cd "${IMAGE}" 2>/dev/null || return 0
+
+	shopt -s nullglob
+	IFS=$'\n'
+
+	##
+	## Quick hack to work around packages (btrfs) installing .gz man
+	##
+	for path in usr/share/man; do
+		[[ -e "${path}" ]] &&
+			find "${path}" -type f -name "*.gz" -exec gunzip {} +
+	done
+
+	##
+	## Build an associative link->target array
+	## This is more complicated than may seem necessary at first glance
+	## because we must:
+	##
+	##	1. not recursively dereference symbolic links in the target
+	##	   itself (so `readlink -m' is out)
+	##	2. while I think relative links are The Right Way, there are
+	##	   plenty of absolute links that need to be prefixed with
+	##	   $IMAGE to make the rest of the code work without hacks
+	##	3. we scan the whole $IMAGE for links to compressed files,
+	##	   not just documentation directories, which gives us free
+	##	   alternatives handling etc.
+	##
+	local -A link_target
+	local link
+	for link in $( find -type l -xtype f )
+	do
+		link_target["${IMAGE%/}${link#.}"]="$(
+			target="$( readlink "${link}" )"
+			if cd "${link%/*}"
+			then
+				[ "${target##*/*}" ] ||
+					cd -P "${target%/*}"
+				target="${PWD}/${target##*/}"
+				[ "${target##${IMAGE}*}" ] &&
+					target="${IMAGE}${target}"
+			fi
+			echo "${target}"
+		)"
+	done
+
+	threads_HACK="$( echo /sys/devices/system/cpu/cpu[0-9]* | wc --words )"
+	(( threads_HACK *= 3 ))
+	global_compress_HACK=0
+	compress() {
+		compress_HACK "${@}" &
+
+		if [[ $(( ++global_compress_HACK % threads_HACK )) == 0 ]]; then
+			wait
+			global_compress_HACK=0
+		fi
+	}
+
+	compress_HACK() {
+		[[ -L "${1}" ]] && return 0
+		local file="$( readlink -m "${1}" )"
+		local suffix="${2}"
+		shift 2
+
+		##
+		## Failure to compress is not fatal, and may even be a
+		## better option (for example, many Tcl man pages are
+		## not compressed by xz because they posess multiple
+		## hard links, which in large numbers are more efficient
+		## than compression.)
+		##
+		if ! "${@}" < "${file}" > "${file}.${suffix}" 2>/dev/null
+		then
+			rm -f "${file}.${suffix}"
+			return 0
+		fi
+		rm "${file}"
+
+		echo "${file#$IMAGE}.${suffix}"
+
+		##
+		## Re-link all (now broken) symbolic links to the compressed
+		## file
+		## FIXME: this should probably be recursive, but luckily few
+		## packages have crazy a -> b -> c ... links.
+		##
+		[[ "${suffix}" ]] && for link in ${!link_target[@]}
+		do
+			if [ "${file}" = "${link_target["${link}"]}" ]
+			then
+				local target="$( readlink "${link}" ).${suffix}"
+				rm "${link}"
+				link+=".${suffix}"
+				echo "${link#${IMAGE}} -> ${target}"
+				ln -s "${target}" "${link}"
+			fi
+		done
+	}
+
+	##
+	## Search and compress!
+	##
+	local file
+	for file in $( {
+			find usr/share/man -type f
+			find lib*/modules -type f -name "*.ko"
+			find -type f -name "System.map"
+			} 2>/dev/null )
+		    
+	do
+		compress "${file}" "${compress_suffix}" \
+			"${compress_pipe[@]}"
+	done
+
+	# FIXME this needs to be re-written anyway
+	local release
+	for release in lib/modules/*; do
+		[[ -d "${release}" ]] || continue
+		depmod -b . "${release##*/}" 2>/dev/null
+	done
+
+	for file in $( find usr/share/info -type f 2>/dev/null )
+	do
+		case "${file}" in
+			usr/share/info/dir) continue ;;
+		esac
+
+		compress "${file}" bz2 bzip2
+	done
+
+	for object in usr/share/doc/*
+	do
+		echo "/${object}.tar.${compress_suffix}"
+
+		(
+			cd "${object%/*}" || exit # subshell
+			object="${object##*/}"
+
+			output="${object}.tar.${compress_suffix}"
+			if tar c "${object}" | "${compress_pipe[@]}" \
+			   > "${output}"; then
+				rm -r "${object}"
+			else
+				rm -f "${output}"
+			fi
+		)
+	done
+
+	wait # HACK
+}
+
+hook_auto_names() { echo merger_install_pre; }
