@@ -67,7 +67,7 @@ _update_cave_search_index() {
 	local temp_suffix="$$.temp"
 	"${cave[@]}" manage-search-index --create \
 			"${index_file}.${temp_suffix}" &&
-		mv "${index}"{."${suffix}",} &&
+		mv "${index_file}"{."${temp_suffix}",} &&
 			return
 
 	##
