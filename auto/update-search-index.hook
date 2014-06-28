@@ -36,39 +36,40 @@ _update_cave_search_index() {
 		option="${argument}"
 	done
 
-	##
-	## Try to kill older running updates but do not wait if that fails
-	## Equivalent to:
-	##   fuser -kw "${index}".*  # not installed by default on Exherbo
-	##
-	(
-		local IFS=$'\n'
-		shopt -s nullglob
-		for file in "${index_file}".*; do
-			for proc in $( find /proc/*/fd -lname "${file}" ); do
-				proc="${proc#/proc/}"
-				kill "${proc%%/*}"
+	if [[ "${index_file}" ]]; then
+		##
+		## Try to kill older running updates if possible
+		## Equivalent to: fuser -kw "${index}".*
+		##
+		(
+			local IFS=$'\n'
+			shopt -s nullglob
+			for file in "${index_file}".*; do
+				for proc in $( find /proc/*/fd -lname "${file}"
+						); do
+					proc="${proc#/proc/}"
+					kill "${proc%%/*}"
+				done
 			done
+		)
+		exec rm --force "${index_file}".* &
 
-		done
-	)
-	exec rm --force "${index_file}".* &
+		##
+		## Run all heavy tasks at lowest priority
+		##
+		export PALUDIS_DO_NOTHING_SANDBOXY=yes
+		local cave=( nice -n 19 ionice -c idle "${CAVE%% *}" )
 
-	##
-	## Run all heavy tasks at lowest priority and disable sandboxing
-	##
-	export PALUDIS_DO_NOTHING_SANDBOXY=yes
-	local cave=( nice -n 19 ionice -c idle "${CAVE%% *}" )
-
-	##
-	## Generate a full search index (this also refreshes the caches)
-	## Atomically update the index file only when successfully completed
-	##
-	local temp_suffix="$$.temp"
-	"${cave[@]}" manage-search-index --create \
-			"${index_file}.${temp_suffix}" &&
-		mv "${index_file}"{."${temp_suffix}",} &&
-			return
+		##
+		## Generate a full search index; this also refreshes the caches
+		## Update the index file only if successfully completed
+		##
+		local temp_suffix="$$.temp"
+		"${cave[@]}" manage-search-index --create \
+				"${index_file}.${temp_suffix}" &&
+			mv "${index_file}"{."${temp_suffix}",} &&
+				return
+	fi
 
 	##
 	## Full search index generation failed; just refresh the caches
