@@ -36,6 +36,8 @@ _update_cave_search_index() {
 		option="${argument}"
 	done
 
+	local cave=( nice -n 19 ionice -c idle "${CAVE%% *}" )
+
 	if [[ "${index_file}" ]]; then
 		##
 		## Try to kill older running updates if possible
@@ -53,13 +55,10 @@ _update_cave_search_index() {
 			done
 		)
 		exec rm --force "${index_file}".* &
-
 		##
 		## Run all heavy tasks at lowest priority
 		##
 		export PALUDIS_DO_NOTHING_SANDBOXY=yes
-		local cave=( nice -n 19 ionice -c idle "${CAVE%% *}" )
-
 		##
 		## Generate a full search index; this also refreshes the caches
 		## Update the index file only if successfully completed
